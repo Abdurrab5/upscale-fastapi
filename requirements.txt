@@ -1,6 +1,6 @@
 fastapi[standard]
 uvicorn[standard]==0.35.0
-onnxruntime
-numpy==2.3.1
+onnxruntime==1.22.1
+numpy==1.26.4
 Pillow==11.3.0
 python-multipart==0.0.20
