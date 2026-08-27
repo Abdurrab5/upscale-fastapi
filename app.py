@@ -2,10 +2,8 @@ import os
 
 
 # ============================================================
-# CPU LIMITS
+# CPU ENVIRONMENT
 # ============================================================
-
-# These MUST be set before NumPy / ONNX Runtime imports.
 
 os.environ.setdefault(
     "OPENBLAS_NUM_THREADS",
@@ -39,15 +37,21 @@ os.environ.setdefault(
 
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
+
+from fastapi.middleware.cors import (
+    CORSMiddleware,
+)
+
+from fastapi.middleware.gzip import (
+    GZipMiddleware,
+)
 
 from routes.upscale import router
 
 
 app = FastAPI(
     title="Xhunta AI Image Upscaler",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 
@@ -59,7 +63,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
     allow_headers=["*"],
 )
 
@@ -95,5 +103,12 @@ def root():
         "service": "Xhunta AI Image Upscaler",
         "engine": "ONNX Runtime",
         "model": "RealESRGAN General x4 v3",
-        "scale": 4,
+        "model_scale": 4,
+        "output_modes": [
+            "auto",
+            "hd",
+            "2k",
+            "4k",
+            "8k",
+        ],
     }

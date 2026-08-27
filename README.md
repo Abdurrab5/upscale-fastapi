@@ -13,11 +13,10 @@ https://vercel-plus-fastapi.vercel.app/
 This example uses the Asynchronous Server Gateway Interface (ASGI) with FastAPI to enable handling requests on Vercel with Serverless Functions.
 
 ## Running Locally
-
-```bash
+ 
 npm i -g vercel
 vercel dev
-```
+ 
 
 Your FastAPI application is now available at `http://localhost:3000`.
 

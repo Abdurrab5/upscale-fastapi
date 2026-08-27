@@ -1,11 +1,18 @@
 import gc
 import time
 
-from config import SCALE
+import numpy as np
+
+from PIL import Image
 
 from services.preprocess import load_image
 from services.inference import get_engine
-from services.output_writer import UpscaleOutputWriter
+from services.output_writer import (
+    UpscaleOutputWriter,
+)
+from services.target_resolver import (
+    resolve_target,
+)
 
 from utils.progress import update_progress
 
@@ -14,13 +21,8 @@ def upscale_image(
     input_path: str,
     output_path: str,
     job_id: str,
+    quality: str,
 ):
-    """
-    CPU-bound production upscaling pipeline.
-
-    This function intentionally remains synchronous.
-    The FastAPI route executes it in a worker thread.
-    """
 
     start = time.perf_counter()
 
@@ -29,9 +31,9 @@ def upscale_image(
 
     try:
 
-        # ========================================================
-        # LOAD IMAGE
-        # ========================================================
+        # ====================================================
+        # LOAD
+        # ====================================================
 
         update_progress(
             job_id,
@@ -43,120 +45,159 @@ def upscale_image(
             input_path
         )
 
-        # ========================================================
-        # LOAD MODEL
-        # ========================================================
+        source_width, source_height = (
+            image.original_size
+        )
+
+        # ====================================================
+        # RESOLUTION
+        # ====================================================
+
+        update_progress(
+            job_id,
+            15,
+            "Calculating target resolution",
+        )
+
+        target = resolve_target(
+            source_width,
+            source_height,
+            quality,
+        )
+
+        print(
+            "RESOLUTION PLAN:",
+            target,
+            flush=True,
+        )
+
+        # ====================================================
+        # OUTPUT
+        # ====================================================
 
         update_progress(
             job_id,
             20,
-            "Loading AI model",
-        )
-
-        engine = get_engine()
-
-        # ========================================================
-        # OUTPUT DIMENSIONS
-        # ========================================================
-
-        original_width, original_height = (
-            image.original_size
-        )
-
-        output_width = (
-            original_width * SCALE
-        )
-
-        output_height = (
-            original_height * SCALE
-        )
-
-        # ========================================================
-        # OUTPUT WRITER
-        # ========================================================
-
-        update_progress(
-            job_id,
-            25,
-            "Preparing output",
+            (
+                f"Preparing {target.quality.upper()} "
+                f"{target.width}×{target.height} output"
+            ),
         )
 
         writer = UpscaleOutputWriter(
-            width=output_width,
-            height=output_height,
+            width=target.width,
+            height=target.height,
             output_path=output_path,
         )
 
         writer.create()
 
-        # ========================================================
-        # TILE CALLBACK
-        # ========================================================
+        # ====================================================
+        # RESIZE ONLY
+        # ====================================================
 
-        def write_tile(
-            tile,
-            left,
-            top,
-        ):
+        if not target.needs_ai:
 
-            writer.write_tile(
-                tile,
-                left,
-                top,
+            update_progress(
+                job_id,
+                40,
+                "Preparing high-quality output",
             )
 
-        # ========================================================
-        # INFERENCE
-        # ========================================================
+            with Image.open(
+                input_path
+            ) as source:
 
-        update_progress(
-            job_id,
-            30,
-            "Upscaling image",
-        )
+                source = source.convert(
+                    "RGB"
+                )
 
-        engine.upscale(
-            image.tensor,
-            tile_callback=write_tile,
-            progress_callback=lambda percent:
-                update_progress(
-                    job_id,
-                    30 + int(
-                        percent * 0.60
+                source = source.resize(
+                    (
+                        target.width,
+                        target.height,
                     ),
-                    f"Upscaling ({percent}%)",
-                ),
-        )
+                    Image.Resampling.LANCZOS,
+                )
 
-        # ========================================================
-        # FLUSH
-        # ========================================================
+                array = np.asarray(
+                    source,
+                    dtype=np.uint8,
+                ).copy()
+
+            writer.write_tile(
+                array,
+                0,
+                0,
+            )
+
+            del array
+
+        # ====================================================
+        # AI
+        # ====================================================
+
+        else:
+
+            update_progress(
+                job_id,
+                25,
+                (
+                    f"AI {target.quality.upper()} "
+                    f"enhancement — "
+                    f"{target.strategy.replace('_', ' ')}"
+                ),
+            )
+
+            engine = get_engine()
+
+            result = engine.upscale(
+                image.tensor,
+                target_width=target.width,
+                target_height=target.height,
+                ai_passes=target.ai_passes,
+                progress_callback=lambda percent:
+                    update_progress(
+                        job_id,
+                        25 + int(
+                            percent * 0.65
+                        ),
+                        (
+                            f"AI processing "
+                            f"({percent}%)"
+                        ),
+                    ),
+            )
+
+            writer.write_tile(
+                result,
+                0,
+                0,
+            )
+
+            del result
+
+        # ====================================================
+        # FINALIZE
+        # ====================================================
 
         update_progress(
             job_id,
             92,
-            "Preparing output",
+            "Preparing final image",
         )
 
         writer.flush()
 
-        # ========================================================
-        # PNG
-        # ========================================================
-
         update_progress(
             job_id,
-            95,
+            96,
             "Encoding image",
         )
 
         writer.finalize(
             alpha=image.alpha,
         )
-
-        # ========================================================
-        # COMPLETE
-        # ========================================================
 
         elapsed = (
             time.perf_counter()
