@@ -2,3 +2,13 @@ temp/
 temp/
 temp/
 .venv/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Temporary files
+temp/
+__pycache__/
+*.py[cod]
