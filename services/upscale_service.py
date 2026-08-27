@@ -1,80 +1,182 @@
 import gc
 import time
 
+from config import SCALE
+
 from services.preprocess import load_image
-from services.postprocess import tensor_to_image
 from services.inference import get_engine
+from services.output_writer import UpscaleOutputWriter
 
 from utils.progress import update_progress
 
 
-async def upscale_image(
+def upscale_image(
     input_path: str,
     output_path: str,
-    job_id: str
+    job_id: str,
 ):
+    """
+    CPU-bound production upscaling pipeline.
+
+    This function intentionally remains synchronous.
+    The FastAPI route executes it in a worker thread.
+    """
+
     start = time.perf_counter()
 
-    update_progress(
-        job_id,
-        10,
-        "Loading image"
-    )
+    image = None
+    writer = None
 
-    image = load_image(input_path)
+    try:
 
-    update_progress(
-        job_id,
-        20,
-        "Loading AI model"
-    )
+        # ========================================================
+        # LOAD IMAGE
+        # ========================================================
 
-    engine = get_engine()
-
-    update_progress(
-        job_id,
-        30,
-        "Upscaling image"
-    )
-
-    output = engine.upscale(
-        image.tensor,
-        progress_callback=lambda p: update_progress(
+        update_progress(
             job_id,
-            30 + int(p * 0.6),
-            f"Upscaling ({p}%)"
+            10,
+            "Loading image",
         )
-    )
 
-    update_progress(
-        job_id,
-        92,
-        "Encoding image"
-    )
+        image = load_image(
+            input_path
+        )
 
-    result = tensor_to_image(
-        output,
-        image.alpha
-    )
+        # ========================================================
+        # LOAD MODEL
+        # ========================================================
 
-    result.save(
-        output_path,
-        format="PNG",
-        optimize=True
-    )
+        update_progress(
+            job_id,
+            20,
+            "Loading AI model",
+        )
 
-    del output
-    del image
-    del result
+        engine = get_engine()
 
-    gc.collect()
+        # ========================================================
+        # OUTPUT DIMENSIONS
+        # ========================================================
 
-    elapsed = time.perf_counter() - start
+        original_width, original_height = (
+            image.original_size
+        )
 
-    update_progress(
-        job_id,
-        100,
-        f"Completed in {elapsed:.2f}s"
-    )
+        output_width = (
+            original_width * SCALE
+        )
 
-    return output_path
+        output_height = (
+            original_height * SCALE
+        )
+
+        # ========================================================
+        # OUTPUT WRITER
+        # ========================================================
+
+        update_progress(
+            job_id,
+            25,
+            "Preparing output",
+        )
+
+        writer = UpscaleOutputWriter(
+            width=output_width,
+            height=output_height,
+            output_path=output_path,
+        )
+
+        writer.create()
+
+        # ========================================================
+        # TILE CALLBACK
+        # ========================================================
+
+        def write_tile(
+            tile,
+            left,
+            top,
+        ):
+
+            writer.write_tile(
+                tile,
+                left,
+                top,
+            )
+
+        # ========================================================
+        # INFERENCE
+        # ========================================================
+
+        update_progress(
+            job_id,
+            30,
+            "Upscaling image",
+        )
+
+        engine.upscale(
+            image.tensor,
+            tile_callback=write_tile,
+            progress_callback=lambda percent:
+                update_progress(
+                    job_id,
+                    30 + int(
+                        percent * 0.60
+                    ),
+                    f"Upscaling ({percent}%)",
+                ),
+        )
+
+        # ========================================================
+        # FLUSH
+        # ========================================================
+
+        update_progress(
+            job_id,
+            92,
+            "Preparing output",
+        )
+
+        writer.flush()
+
+        # ========================================================
+        # PNG
+        # ========================================================
+
+        update_progress(
+            job_id,
+            95,
+            "Encoding image",
+        )
+
+        writer.finalize(
+            alpha=image.alpha,
+        )
+
+        # ========================================================
+        # COMPLETE
+        # ========================================================
+
+        elapsed = (
+            time.perf_counter()
+            - start
+        )
+
+        update_progress(
+            job_id,
+            100,
+            f"Completed in {elapsed:.2f}s",
+        )
+
+        return output_path
+
+    finally:
+
+        if writer is not None:
+            writer.close()
+
+        if image is not None:
+            del image
+
+        gc.collect()

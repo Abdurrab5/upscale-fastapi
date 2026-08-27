@@ -1,38 +1,78 @@
+import logging
 import os
 import uuid
 
 
-TEMP_DIR = "temp"
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
 
-os.makedirs(TEMP_DIR, exist_ok=True)
+TEMP_DIR = os.path.join(
+    BASE_DIR,
+    "temp",
+)
+
+os.makedirs(
+    TEMP_DIR,
+    exist_ok=True,
+)
 
 
-def create_input_path(filename: str):
+logger = logging.getLogger(__name__)
 
-    ext = os.path.splitext(filename)[1].lower()
+
+def create_input_path(
+    filename: str,
+) -> str:
+    """
+    Create a unique temporary input path.
+
+    The original filename is never used as the actual filesystem
+    name, preventing path traversal and filename collisions.
+    """
+
+    extension = os.path.splitext(
+        filename or ""
+    )[1].lower()
 
     return os.path.join(
         TEMP_DIR,
-        f"{uuid.uuid4().hex}{ext}"
+        f"{uuid.uuid4().hex}{extension}",
     )
 
 
-def create_output_path():
+def create_output_path() -> str:
+    """
+    Create a unique temporary output path.
+    """
 
     return os.path.join(
         TEMP_DIR,
-        f"{uuid.uuid4().hex}.png"
+        f"{uuid.uuid4().hex}.png",
     )
 
 
 def cleanup(*files):
+    """
+    Safely remove temporary files.
+    """
 
-    for file in files:
+    for path in files:
+
+        if not path:
+            continue
 
         try:
 
-            if file and os.path.exists(file):
-                os.remove(file)
+            if os.path.isfile(path):
+                os.remove(path)
 
-        except Exception:
-            pass
+        except OSError as exc:
+
+            logger.warning(
+                "Unable to remove temporary file %s: %s",
+                path,
+                exc,
+            )

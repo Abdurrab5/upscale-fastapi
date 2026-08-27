@@ -1,25 +1,61 @@
 import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ============================================================
+# APPLICATION PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+
+# ============================================================
+# ONNX MODEL
+# ============================================================
 
 MODEL_PATH = os.path.join(
     BASE_DIR,
     "models",
-    "realesr-general-x4v3.onnx"
+    "realesr-general-x4v3.onnx",
 )
+
 
 SCALE = 4
 
-# tile sizes
+
+# ============================================================
+# TILE CONFIGURATION
+# ============================================================
+
 TILE_SMALL = 128
 TILE_MEDIUM = 256
-TILE_LARGE = 512
+TILE_LARGE = 256
 
-# overlap between tiles
 TILE_PAD = 16
- 
-# Thread count
-CPU_THREADS = min(os.cpu_count() or 4, 8)
 
-# Output
+
+# ============================================================
+# CPU
+# ============================================================
+
+CPU_THREADS = min(
+    os.cpu_count() or 2,
+    2,
+)
+
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
 OUTPUT_FORMAT = "PNG"
+
+
+# ============================================================
+# UPLOAD / IMAGE LIMITS
+# ============================================================
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+
+MAX_IMAGE_PIXELS = 12_000_000
