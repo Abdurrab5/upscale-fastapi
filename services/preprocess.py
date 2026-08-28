@@ -5,6 +5,10 @@ from PIL import (
     ImageOps,
 )
 
+from config import (
+    MAX_IMAGE_PIXELS,
+)
+
 
 class ImageData:
 
@@ -20,35 +24,70 @@ class ImageData:
         self.original_size = original_size
 
 
+# ============================================================
+# LOAD IMAGE
+# ============================================================
+
 def load_image(
     path: str,
 ) -> ImageData:
 
     with Image.open(path) as source:
 
-        img = ImageOps.exif_transpose(
+        source = ImageOps.exif_transpose(
             source
         )
 
+        width, height = source.size
+
+        pixels = (
+            width
+            * height
+        )
+
+        if pixels > MAX_IMAGE_PIXELS:
+
+            raise ValueError(
+                "Image exceeds the maximum "
+                f"allowed resolution of "
+                f"{MAX_IMAGE_PIXELS:,} pixels."
+            )
+
+        # ----------------------------------------------------
+        # Alpha
+        # ----------------------------------------------------
+
         alpha = None
 
-        if "A" in img.getbands():
+        if "A" in source.getbands():
 
             alpha = np.asarray(
-                img.getchannel("A"),
+                source.getchannel("A"),
                 dtype=np.uint8,
             ).copy()
 
-        rgb = img.convert(
+        # ----------------------------------------------------
+        # RGB
+        # ----------------------------------------------------
+
+        rgb = source.convert(
             "RGB"
         )
 
-        width, height = rgb.size
+        try:
 
-        array = np.asarray(
-            rgb,
-            dtype=np.uint8,
-        )
+            array = np.asarray(
+                rgb,
+                dtype=np.uint8,
+            ).copy()
+
+        finally:
+
+            rgb.close()
+
+        # ----------------------------------------------------
+        # RGB HWC -> NCHW
+        # ----------------------------------------------------
 
         tensor = (
             array
@@ -72,7 +111,7 @@ def load_image(
             axis=0,
         )
 
-        rgb.close()
+        del array
 
         return ImageData(
             tensor=tensor,

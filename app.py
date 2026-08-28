@@ -36,6 +36,10 @@ os.environ.setdefault(
 )
 
 
+# ============================================================
+# FASTAPI
+# ============================================================
+
 from fastapi import FastAPI
 
 from fastapi.middleware.cors import (
@@ -46,12 +50,20 @@ from fastapi.middleware.gzip import (
     GZipMiddleware,
 )
 
+from config import (
+    QUALITY_TARGETS,
+)
+
 from routes.upscale import router
 
 
+# ============================================================
+# APPLICATION
+# ============================================================
+
 app = FastAPI(
     title="Xhunta AI Image Upscaler",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 
@@ -101,14 +113,20 @@ def root():
     return {
         "status": "running",
         "service": "Xhunta AI Image Upscaler",
+        "version": "3.0.0",
         "engine": "ONNX Runtime",
-        "model": "RealESRGAN General x4 v3",
-        "model_scale": 4,
+        "models": {
+            "fast_x2": "Fast x2",
+            "real_esrgan_x4": "Real-ESRGAN General x4 v3",
+        },
         "output_modes": [
-            "auto",
             "hd",
             "2k",
             "4k",
-            "8k",
         ],
+        "target_longest_edges": {
+            key: value
+            for key, value
+            in QUALITY_TARGETS.items()
+        },
     }

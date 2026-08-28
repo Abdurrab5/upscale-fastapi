@@ -3,11 +3,13 @@ import numpy as np
 from PIL import Image
 
 from config import (
-    MODEL_SCALE,
-    TILE_LARGE,
-    TILE_MEDIUM,
+    ESRGAN_TILE_LARGE,
+    ESRGAN_TILE_MEDIUM,
+    ESRGAN_TILE_SMALL,
+    FAST_TILE_LARGE,
+    FAST_TILE_MEDIUM,
+    FAST_TILE_SMALL,
     TILE_PAD,
-    TILE_SMALL,
 )
 
 
@@ -18,32 +20,50 @@ from config import (
 def choose_tile_size(
     width: int,
     height: int,
+    model_scale: int,
 ) -> int:
 
-    pixels = width * height
+    pixels = (
+        width
+        * height
+    )
+
+    if model_scale == 2:
+
+        if pixels <= 2_000_000:
+            return FAST_TILE_SMALL
+
+        if pixels <= 6_000_000:
+            return FAST_TILE_MEDIUM
+
+        return FAST_TILE_LARGE
 
     if pixels <= 2_000_000:
-        return TILE_SMALL
+        return ESRGAN_TILE_SMALL
 
     if pixels <= 6_000_000:
-        return TILE_MEDIUM
+        return ESRGAN_TILE_MEDIUM
 
-    return TILE_LARGE
+    return ESRGAN_TILE_LARGE
 
 
 # ============================================================
-# GENERATE TILES
+# TILE GENERATOR
 # ============================================================
 
 def generate_tiles(
     image,
+    model_scale: int,
 ):
 
-    _, _, height, width = image.shape
+    _, _, height, width = (
+        image.shape
+    )
 
     tile_size = choose_tile_size(
         width,
         height,
+        model_scale,
     )
 
     overlap = TILE_PAD * 2
@@ -75,15 +95,13 @@ def generate_tiles(
                 height,
             )
 
-            tile = image[
-                :,
-                :,
-                top:bottom,
-                left:right,
-            ]
-
             yield (
-                tile,
+                image[
+                    :,
+                    :,
+                    top:bottom,
+                    left:right,
+                ],
                 left,
                 top,
                 right,
@@ -92,44 +110,56 @@ def generate_tiles(
 
 
 # ============================================================
-# MODEL OUTPUT
+# OUTPUT CONVERSION
 # ============================================================
 
-def _model_to_image(
+def model_output_to_image(
     prediction,
 ):
 
     if prediction.ndim != 4:
 
         raise RuntimeError(
-            "Unexpected ONNX model output: "
+            "Unexpected ONNX output shape: "
             f"{prediction.shape}"
         )
 
-    prediction = prediction.squeeze(
-        0
-    )
+    prediction = prediction[0]
 
-    prediction = prediction.transpose(
-        1,
-        2,
-        0,
-    )
+    if prediction.shape[0] == 3:
 
-    np.clip(
+        prediction = prediction.transpose(
+            1,
+            2,
+            0,
+        )
+
+    elif prediction.shape[-1] == 3:
+
+        pass
+
+    else:
+
+        raise RuntimeError(
+            "Model output must contain 3 RGB channels."
+        )
+
+    prediction = np.clip(
         prediction,
         0.0,
         1.0,
-        out=prediction,
     )
 
     prediction = (
-        prediction * 255.0
+        prediction
+        * 255.0
     ).astype(
         np.uint8
     )
 
-    return prediction
+    return np.ascontiguousarray(
+        prediction
+    )
 
 
 # ============================================================
@@ -146,6 +176,7 @@ def resize_image_array(
         array.shape[1] == width
         and array.shape[0] == height
     ):
+
         return array
 
     image = Image.fromarray(
@@ -155,16 +186,16 @@ def resize_image_array(
 
     try:
 
-        image = image.resize(
+        resized = image.resize(
             (
-                width,
-                height,
+                int(width),
+                int(height),
             ),
             Image.Resampling.LANCZOS,
         )
 
         return np.asarray(
-            image,
+            resized,
             dtype=np.uint8,
         ).copy()
 
@@ -174,7 +205,7 @@ def resize_image_array(
 
 
 # ============================================================
-# SINGLE AI PASS
+# AI TILE PASS
 # ============================================================
 
 def run_ai_pass(
@@ -182,12 +213,16 @@ def run_ai_pass(
     image,
     output_width,
     output_height,
+    model_scale,
     progress_callback=None,
 ):
 
-    _, _, source_height, source_width = (
-        image.shape
-    )
+    (
+        _,
+        _,
+        source_height,
+        source_width,
+    ) = image.shape
 
     input_name = (
         session
@@ -195,9 +230,23 @@ def run_ai_pass(
         .name
     )
 
+    # --------------------------------------------------------
+    # Final output canvas
+    # --------------------------------------------------------
+
+    canvas = np.zeros(
+        (
+            output_height,
+            output_width,
+            3,
+        ),
+        dtype=np.uint8,
+    )
+
     tile_size = choose_tile_size(
         source_width,
         source_height,
+        model_scale,
     )
 
     overlap = TILE_PAD * 2
@@ -230,19 +279,6 @@ def run_ai_pass(
         rows * columns,
     )
 
-    # --------------------------------------------------------
-    # Final stage canvas
-    # --------------------------------------------------------
-
-    canvas = np.zeros(
-        (
-            output_height,
-            output_width,
-            3,
-        ),
-        dtype=np.uint8,
-    )
-
     processed = 0
 
     for (
@@ -251,12 +287,14 @@ def run_ai_pass(
         top,
         right,
         bottom,
-    ) in generate_tiles(image):
+    ) in generate_tiles(
+        image,
+        model_scale,
+    ):
 
-        print(
-            "DEBUG MODEL INPUT:",
-            tile.shape,
-            flush=True,
+        tile = np.ascontiguousarray(
+            tile,
+            dtype=np.float32,
         )
 
         prediction = session.run(
@@ -266,64 +304,42 @@ def run_ai_pass(
             },
         )[0]
 
-        print(
-            "DEBUG MODEL OUTPUT:",
-            prediction.shape,
-            flush=True,
-        )
-
-        if prediction.ndim != 4:
-
-            raise RuntimeError(
-                "Invalid RealESRGAN output."
+        prediction = (
+            model_output_to_image(
+                prediction
             )
-
-        predicted_height = (
-            prediction.shape[2]
         )
 
-        predicted_width = (
-            prediction.shape[3]
-        )
-
-        source_tile_height = (
-            tile.shape[2]
-        )
-
-        source_tile_width = (
-            tile.shape[3]
-        )
+        # ----------------------------------------------------
+        # Verify model scale
+        # ----------------------------------------------------
 
         expected_width = (
-            source_tile_width
-            * MODEL_SCALE
+            tile.shape[3]
+            * model_scale
         )
 
         expected_height = (
-            source_tile_height
-            * MODEL_SCALE
+            tile.shape[2]
+            * model_scale
         )
 
         if (
-            predicted_width
+            prediction.shape[1]
             != expected_width
-            or predicted_height
+            or prediction.shape[0]
             != expected_height
         ):
 
             raise RuntimeError(
-                "RealESRGAN scale mismatch. "
-                f"Input={source_tile_width}x"
-                f"{source_tile_height}, "
-                f"Output={predicted_width}x"
-                f"{predicted_height}, "
+                "Model scale mismatch. "
+                f"Input={tile.shape[3]}x"
+                f"{tile.shape[2]}, "
+                f"Output={prediction.shape[1]}x"
+                f"{prediction.shape[0]}, "
                 f"Expected={expected_width}x"
                 f"{expected_height}"
             )
-
-        prediction = _model_to_image(
-            prediction
-        )
 
         # ----------------------------------------------------
         # Remove overlap
@@ -355,22 +371,24 @@ def run_ai_pass(
 
         x1 = (
             crop_left
-            * MODEL_SCALE
+            * model_scale
         )
 
         y1 = (
             crop_top
-            * MODEL_SCALE
+            * model_scale
         )
 
         x2 = (
             prediction.shape[1]
-            - crop_right * MODEL_SCALE
+            - crop_right
+            * model_scale
         )
 
         y2 = (
             prediction.shape[0]
-            - crop_bottom * MODEL_SCALE
+            - crop_bottom
+            * model_scale
         )
 
         prediction = prediction[
@@ -379,27 +397,31 @@ def run_ai_pass(
         ]
 
         # ----------------------------------------------------
-        # Source coordinates after overlap
+        # Source coordinates
         # ----------------------------------------------------
 
         source_left = (
-            left + crop_left
+            left
+            + crop_left
         )
 
         source_top = (
-            top + crop_top
+            top
+            + crop_top
         )
 
         source_right = (
-            right - crop_right
+            right
+            - crop_right
         )
 
         source_bottom = (
-            bottom - crop_bottom
+            bottom
+            - crop_bottom
         )
 
         # ----------------------------------------------------
-        # Map to final stage
+        # Map source to final output
         # ----------------------------------------------------
 
         target_left = int(
@@ -436,12 +458,14 @@ def run_ai_pass(
 
         target_width = max(
             1,
-            target_right - target_left,
+            target_right
+            - target_left,
         )
 
         target_height = max(
             1,
-            target_bottom - target_top,
+            target_bottom
+            - target_top,
         )
 
         prediction = resize_image_array(
@@ -450,22 +474,30 @@ def run_ai_pass(
             target_height,
         )
 
+        # ----------------------------------------------------
+        # Safe canvas write
+        # ----------------------------------------------------
+
         right_limit = min(
             output_width,
-            target_left + prediction.shape[1],
+            target_left
+            + prediction.shape[1],
         )
 
         bottom_limit = min(
             output_height,
-            target_top + prediction.shape[0],
+            target_top
+            + prediction.shape[0],
         )
 
         write_width = (
-            right_limit - target_left
+            right_limit
+            - target_left
         )
 
         write_height = (
-            bottom_limit - target_top
+            bottom_limit
+            - target_top
         )
 
         if (
@@ -496,6 +528,7 @@ def run_ai_pass(
                 )
             )
 
+        del tile
         del prediction
 
     return canvas

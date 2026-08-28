@@ -22,6 +22,10 @@ class TargetResolution:
 
     needs_ai: bool
 
+    model_input_width: int
+
+    model_input_height: int
+
     @property
     def aspect_ratio(self) -> float:
 
@@ -32,22 +36,22 @@ class TargetResolution:
 
 
 # ============================================================
-# ROUND
+# DIMENSION ROUNDING
 # ============================================================
 
 def _round_dimension(
     value: float,
 ) -> int:
 
-    value = max(
+    result = max(
         2,
         int(round(value)),
     )
 
-    if value % 2:
-        value += 1
+    if result % 2:
+        result += 1
 
-    return value
+    return result
 
 
 # ============================================================
@@ -74,16 +78,18 @@ def _calculate_dimensions(
 
         width = longest_edge
 
-        height = _round_dimension(
-            source_height * scale
+        height = (
+            source_height
+            * scale
         )
 
     else:
 
         height = longest_edge
 
-        width = _round_dimension(
-            source_width * scale
+        width = (
+            source_width
+            * scale
         )
 
     return (
@@ -120,15 +126,17 @@ def resolve_target(
 
     from config import (
         QUALITY_TARGETS,
+        QUALITY_MODEL,
+        FAST_X2_SCALE,
+        REAL_ESRGAN_SCALE,
         MAX_OUTPUT_DIMENSION,
         MAX_OUTPUT_PIXELS,
-        MODEL_SCALE,
     )
 
     if quality not in QUALITY_TARGETS:
 
         raise ValueError(
-            "Please select 2K, 4K, or 8K."
+            "Please select HD, 2K, or 4K."
         )
 
     longest_edge = min(
@@ -144,6 +152,10 @@ def resolve_target(
         )
     )
 
+    # --------------------------------------------------------
+    # Pixel safety
+    # --------------------------------------------------------
+
     pixels = (
         target_width
         * target_height
@@ -157,12 +169,18 @@ def resolve_target(
         ) ** 0.5
 
         target_width = _round_dimension(
-            target_width * reduction
+            target_width
+            * reduction
         )
 
         target_height = _round_dimension(
-            target_height * reduction
+            target_height
+            * reduction
         )
+
+    # --------------------------------------------------------
+    # Final scale
+    # --------------------------------------------------------
 
     scale_x = (
         target_width
@@ -179,34 +197,77 @@ def resolve_target(
         + scale_y
     ) / 2.0
 
-    # ========================================================
-    # PROCESSING STRATEGY
-    # ========================================================
+    # --------------------------------------------------------
+    # Model routing
+    # --------------------------------------------------------
+
+    model = QUALITY_MODEL[
+        quality
+    ]
+
+    # --------------------------------------------------------
+    # Downscale
+    # --------------------------------------------------------
 
     if scale <= 1.0:
 
-        strategy = "resize"
-        ai_passes = 0
-        needs_ai = False
+        return TargetResolution(
+            width=target_width,
+            height=target_height,
 
-    elif scale <= MODEL_SCALE:
+            source_width=source_width,
+            source_height=source_height,
 
-        strategy = "ai_native"
-        ai_passes = 1
-        needs_ai = True
+            quality=quality,
 
-    else:
+            scale=scale,
 
-        strategy = "multi_stage_ai"
+            model_scale=1,
 
-        # One x4 pass can cover up to 4x.
-        # A second pass allows the pipeline to exceed 4x.
-        ai_passes = 2
+            strategy="resize",
 
-        needs_ai = True
+            ai_passes=0,
+
+            needs_ai=False,
+
+            model_input_width=source_width,
+            model_input_height=source_height,
+        )
+
+    # --------------------------------------------------------
+    # Fast x2
+    # --------------------------------------------------------
+
+    if model == "fast_x2":
+
+        return TargetResolution(
+            width=target_width,
+            height=target_height,
+
+            source_width=source_width,
+            source_height=source_height,
+
+            quality=quality,
+
+            scale=scale,
+
+            model_scale=FAST_X2_SCALE,
+
+            strategy="fast_x2",
+
+            ai_passes=1,
+
+            needs_ai=True,
+
+            model_input_width=source_width,
+            model_input_height=source_height,
+        )
+
+    # --------------------------------------------------------
+    # Real-ESRGAN x4
+    # --------------------------------------------------------
 
     return TargetResolution(
-
         width=target_width,
         height=target_height,
 
@@ -217,11 +278,14 @@ def resolve_target(
 
         scale=scale,
 
-        model_scale=MODEL_SCALE,
+        model_scale=REAL_ESRGAN_SCALE,
 
-        strategy=strategy,
+        strategy="best_x4",
 
-        ai_passes=ai_passes,
+        ai_passes=1,
 
-        needs_ai=needs_ai,
+        needs_ai=True,
+
+        model_input_width=source_width,
+        model_input_height=source_height,
     )

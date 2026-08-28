@@ -15,12 +15,10 @@ from config import (
 class UpscaleOutputWriter:
 
     """
-    Disk-backed final output canvas.
+    Disk-backed RGB output canvas.
 
-    IMPORTANT:
-
-    This canvas contains the FINAL requested resolution,
-    not the RealESRGAN x4 intermediate resolution.
+    The canvas is always the FINAL requested
+    resolution.
     """
 
     def __init__(
@@ -38,6 +36,11 @@ class UpscaleOutputWriter:
         self.temp_path = None
         self.canvas = None
 
+
+    # ========================================================
+    # CREATE
+    # ========================================================
+
     def create(self):
 
         if self.canvas is not None:
@@ -54,10 +57,12 @@ class UpscaleOutputWriter:
             exist_ok=True,
         )
 
-        fd, self.temp_path = tempfile.mkstemp(
-            prefix="upscale_",
-            suffix=".raw",
-            dir=directory,
+        fd, self.temp_path = (
+            tempfile.mkstemp(
+                prefix="upscale_",
+                suffix=".raw",
+                dir=directory,
+            )
         )
 
         os.close(fd)
@@ -75,14 +80,20 @@ class UpscaleOutputWriter:
 
         self.canvas[:] = 0
 
+
+    # ========================================================
+    # WRITE
+    # ========================================================
+
     def write_tile(
         self,
         tile,
-        left: int,
-        top: int,
+        left,
+        top,
     ):
 
         if self.canvas is None:
+
             raise RuntimeError(
                 "Output writer has not been initialized."
             )
@@ -90,19 +101,15 @@ class UpscaleOutputWriter:
         if tile is None:
             return
 
+        tile = np.asarray(
+            tile
+        )
+
         if tile.ndim != 3:
+
             raise ValueError(
-                "Output tile must have shape HWC."
+                "Output tile must be HWC."
             )
-
-        tile_height = tile.shape[0]
-        tile_width = tile.shape[1]
-
-        if (
-            tile_height <= 0
-            or tile_width <= 0
-        ):
-            return
 
         left = max(
             0,
@@ -116,12 +123,12 @@ class UpscaleOutputWriter:
 
         right = min(
             self.width,
-            left + tile_width,
+            left + tile.shape[1],
         )
 
         bottom = min(
             self.height,
-            top + tile_height,
+            top + tile.shape[0],
         )
 
         if (
@@ -130,28 +137,29 @@ class UpscaleOutputWriter:
         ):
             return
 
-        write_width = (
-            right - left
-        )
-
-        write_height = (
-            bottom - top
-        )
-
         self.canvas[
             top:bottom,
             left:right,
-            :
         ] = tile[
-            :write_height,
-            :write_width,
-            :
+            :bottom - top,
+            :right - left,
         ]
+
+
+    # ========================================================
+    # FLUSH
+    # ========================================================
 
     def flush(self):
 
         if self.canvas is not None:
+
             self.canvas.flush()
+
+
+    # ========================================================
+    # FINALIZE
+    # ========================================================
 
     def finalize(
         self,
@@ -159,16 +167,26 @@ class UpscaleOutputWriter:
     ):
 
         if self.canvas is None:
+
             raise RuntimeError(
                 "Output writer has not been initialized."
             )
 
         self.flush()
 
+        # Copy the memmap into a regular ndarray
+        # before handing it to Pillow.
+
+        rgb = np.asarray(
+            self.canvas
+        ).copy()
+
         image = Image.fromarray(
-            self.canvas,
+            rgb,
             mode="RGB",
         )
+
+        del rgb
 
         alpha_image = None
 
@@ -181,24 +199,22 @@ class UpscaleOutputWriter:
                     mode="L",
                 )
 
-                if alpha_image.size != (
-                    self.width,
-                    self.height,
-                ):
+                if alpha_image.size != image.size:
 
-                    alpha_image = alpha_image.resize(
-                        (
-                            self.width,
-                            self.height,
-                        ),
+                    resized = alpha_image.resize(
+                        image.size,
                         Image.Resampling.LANCZOS,
                     )
+
+                    alpha_image.close()
+
+                    alpha_image = resized
 
                 image.putalpha(
                     alpha_image
                 )
 
-            if OUTPUT_FORMAT == "PNG":
+            if OUTPUT_FORMAT.upper() == "PNG":
 
                 image.save(
                     self.output_path,
@@ -221,6 +237,11 @@ class UpscaleOutputWriter:
             image.close()
 
             gc.collect()
+
+
+    # ========================================================
+    # CLOSE
+    # ========================================================
 
     def close(self):
 
@@ -247,6 +268,7 @@ class UpscaleOutputWriter:
                 if os.path.isfile(
                     self.temp_path
                 ):
+
                     os.remove(
                         self.temp_path
                     )
@@ -255,6 +277,11 @@ class UpscaleOutputWriter:
                 pass
 
             self.temp_path = None
+
+
+    # ========================================================
+    # CONTEXT MANAGER
+    # ========================================================
 
     def __enter__(self):
 

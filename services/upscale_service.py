@@ -1,20 +1,31 @@
+
+from __future__ import annotations
+
 import gc
 import time
 
 import numpy as np
+from PIL import Image, ImageOps
 
-from PIL import Image
+from services.inference import (
+    get_engine,
+)
 
-from services.preprocess import load_image
-from services.inference import get_engine
 from services.output_writer import (
     UpscaleOutputWriter,
 )
+
+from services.preprocess import (
+    load_image,
+)
+
 from services.target_resolver import (
     resolve_target,
 )
 
-from utils.progress import update_progress
+from utils.progress import (
+    update_progress,
+)
 
 
 def upscale_image(
@@ -24,7 +35,7 @@ def upscale_image(
     quality: str,
 ):
 
-    start = time.perf_counter()
+    started = time.perf_counter()
 
     image = None
     writer = None
@@ -37,7 +48,7 @@ def upscale_image(
 
         update_progress(
             job_id,
-            10,
+            5,
             "Loading image",
         )
 
@@ -49,13 +60,19 @@ def upscale_image(
             image.original_size
         )
 
+        print(
+            "[UPSCALE] Source: "
+            f"{source_width}x{source_height}",
+            flush=True,
+        )
+
         # ====================================================
         # RESOLUTION
         # ====================================================
 
         update_progress(
             job_id,
-            15,
+            10,
             "Calculating target resolution",
         )
 
@@ -66,21 +83,41 @@ def upscale_image(
         )
 
         print(
-            "RESOLUTION PLAN:",
+            "[UPSCALE] Resolution plan:",
             target,
             flush=True,
         )
 
+        print(
+            "[UPSCALE] Strategy:",
+            target.strategy,
+            flush=True,
+        )
+
+        print(
+            "[UPSCALE] AI passes:",
+            target.ai_passes,
+            flush=True,
+        )
+
+        print(
+            "[UPSCALE] Scale:",
+            f"{target.scale:.2f}x",
+            flush=True,
+        )
+
         # ====================================================
-        # OUTPUT
+        # OUTPUT WRITER
         # ====================================================
 
         update_progress(
             job_id,
-            20,
+            15,
             (
-                f"Preparing {target.quality.upper()} "
-                f"{target.width}×{target.height} output"
+                "Preparing "
+                f"{target.quality.upper()} "
+                f"{target.width}×"
+                f"{target.height} output"
             ),
         )
 
@@ -93,26 +130,30 @@ def upscale_image(
         writer.create()
 
         # ====================================================
-        # RESIZE ONLY
+        # NON-AI RESIZE
         # ====================================================
 
         if not target.needs_ai:
 
             update_progress(
                 job_id,
-                40,
-                "Preparing high-quality output",
+                35,
+                "Resizing image",
             )
 
             with Image.open(
                 input_path
             ) as source:
 
+                source = ImageOps.exif_transpose(
+                    source
+                )
+
                 source = source.convert(
                     "RGB"
                 )
 
-                source = source.resize(
+                resized = source.resize(
                     (
                         target.width,
                         target.height,
@@ -121,7 +162,7 @@ def upscale_image(
                 )
 
                 array = np.asarray(
-                    source,
+                    resized,
                     dtype=np.uint8,
                 ).copy()
 
@@ -139,13 +180,25 @@ def upscale_image(
 
         else:
 
+            if target.strategy == "fast_x2":
+
+                label = "FSRCNN x2"
+
+            elif target.strategy == "best_x4":
+
+                label = "Real-ESRGAN x4"
+
+            else:
+
+                label = "AI enhancement"
+
             update_progress(
                 job_id,
-                25,
+                20,
                 (
-                    f"AI {target.quality.upper()} "
-                    f"enhancement — "
-                    f"{target.strategy.replace('_', ' ')}"
+                    f"{label} enhancement "
+                    f"to "
+                    f"{target.quality.upper()}"
                 ),
             )
 
@@ -155,18 +208,24 @@ def upscale_image(
                 image.tensor,
                 target_width=target.width,
                 target_height=target.height,
+                strategy=target.strategy,
                 ai_passes=target.ai_passes,
-                progress_callback=lambda percent:
+                progress_callback=(
+                    lambda percent:
                     update_progress(
                         job_id,
-                        25 + int(
-                            percent * 0.65
+                        20
+                        + int(
+                            percent
+                            * 0.70
                         ),
                         (
-                            f"AI processing "
+                            f"{label} "
+                            f"processing "
                             f"({percent}%)"
                         ),
-                    ),
+                    )
+                ),
             )
 
             writer.write_tile(
@@ -201,7 +260,13 @@ def upscale_image(
 
         elapsed = (
             time.perf_counter()
-            - start
+            - started
+        )
+
+        print(
+            "[UPSCALE] Completed:",
+            f"{elapsed:.2f}s",
+            flush=True,
         )
 
         update_progress(
@@ -212,12 +277,44 @@ def upscale_image(
 
         return output_path
 
+    except Exception as exc:
+
+        print(
+            "[UPSCALE] FAILED:",
+            repr(exc),
+            flush=True,
+        )
+
+        update_progress(
+            job_id,
+            100,
+            f"Processing failed: {exc}",
+        )
+
+        raise
+
     finally:
 
         if writer is not None:
+
             writer.close()
 
         if image is not None:
-            del image
+
+            try:
+                del image.tensor
+            except Exception:
+                pass
+
+            try:
+                del image.alpha
+            except Exception:
+                pass
+
+            try:
+                del image
+            except Exception:
+                pass
 
         gc.collect()
+ 

@@ -1,45 +1,43 @@
 import json
 import os
 import tempfile
+import time
 
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    )
-)
-
-PROGRESS_DIR = os.path.join(
-    BASE_DIR,
-    "progress",
-)
-
-os.makedirs(
+from config import (
     PROGRESS_DIR,
-    exist_ok=True,
+    PROGRESS_TTL_SECONDS,
 )
 
+
+# ============================================================
+# PATH
+# ============================================================
 
 def _progress_path(
     job_id: str,
 ) -> str:
 
-    return os.path.join(
-        PROGRESS_DIR,
-        f"{job_id}.json",
+    safe_job_id = (
+        str(job_id)
+        .strip()
     )
 
+    return os.path.join(
+        PROGRESS_DIR,
+        f"{safe_job_id}.json",
+    )
+
+
+# ============================================================
+# UPDATE
+# ============================================================
 
 def update_progress(
     job_id: str,
     percent: int,
     message: str,
+    status: str = "processing",
 ):
-    """
-    Atomically update progress.
-
-    The frontend will never observe a partially written JSON file.
-    """
 
     percent = max(
         0,
@@ -65,6 +63,13 @@ def update_progress(
 
     try:
 
+        payload = {
+            "percent": percent,
+            "status": status,
+            "message": str(message),
+            "updated_at": time.time(),
+        }
+
         with os.fdopen(
             fd,
             "w",
@@ -72,10 +77,7 @@ def update_progress(
         ) as file:
 
             json.dump(
-                {
-                    "percent": percent,
-                    "message": str(message),
-                },
+                payload,
                 file,
                 separators=(
                     ",",
@@ -84,6 +86,7 @@ def update_progress(
             )
 
             file.flush()
+
             os.fsync(
                 file.fileno()
             )
@@ -105,12 +108,13 @@ def update_progress(
         raise
 
 
+# ============================================================
+# GET
+# ============================================================
+
 def get_progress(
     job_id: str,
 ):
-    """
-    Read the latest progress state.
-    """
 
     path = _progress_path(
         job_id
@@ -120,10 +124,27 @@ def get_progress(
 
         return {
             "percent": 0,
+            "status": "queued",
             "message": "Waiting",
         }
 
     try:
+
+        if (
+            time.time()
+            - os.path.getmtime(path)
+            > PROGRESS_TTL_SECONDS
+        ):
+
+            remove_progress(
+                job_id
+            )
+
+            return {
+                "percent": 0,
+                "status": "expired",
+                "message": "Job expired",
+            }
 
         with open(
             path,
@@ -131,7 +152,9 @@ def get_progress(
             encoding="utf-8",
         ) as file:
 
-            return json.load(file)
+            return json.load(
+                file
+            )
 
     except (
         OSError,
@@ -140,16 +163,18 @@ def get_progress(
 
         return {
             "percent": 0,
+            "status": "processing",
             "message": "Processing",
         }
 
 
+# ============================================================
+# REMOVE
+# ============================================================
+
 def remove_progress(
     job_id: str,
 ):
-    """
-    Remove progress state after completion.
-    """
 
     path = _progress_path(
         job_id
