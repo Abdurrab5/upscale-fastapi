@@ -52,16 +52,36 @@ router = APIRouter()
 # ============================================================
 
 QUALITY_MODES = {
-    "2k": 2048,
+    "hd": 2048,
     "4k": 4096,
-    "8k": 8192,
 }
+
 
 DEFAULT_QUALITY = "4k"
 
-ALLOWED_QUALITY_VALUES = set(
-    QUALITY_MODES.keys()
-)
+
+ALLOWED_QUALITY_VALUES = {
+    "hd",
+    "4k",
+}
+
+
+# ============================================================
+# QUALITY ALIASES
+# ============================================================
+
+QUALITY_ALIASES = {
+    # HD
+    "hd": "hd",
+    "2k": "hd",
+    "2048": "hd",
+    "2k-hd": "hd",
+
+    # 4K
+    "4k": "4k",
+    "4096": "4k",
+    "4k-hd": "4k",
+}
 
 
 # ============================================================
@@ -75,10 +95,23 @@ ALLOWED_EXTENSIONS = {
     ".webp",
 }
 
+
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
     "image/png",
     "image/webp",
+}
+
+
+# ============================================================
+# OUTPUT FORMATS
+# ============================================================
+
+ALLOWED_OUTPUT_FORMATS = {
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
 }
 
 
@@ -121,58 +154,84 @@ def validate_extension(
 # ============================================================
 
 def normalize_quality(
-    quality: str,
+    quality: str | None,
 ) -> str:
     """
-    Normalize the frontend quality selection.
+    Normalize Laravel/frontend quality values.
 
-    Supported values:
+    Supported final modes:
 
-        2k
-        4k
-        8k
+        hd  -> 2048px longest edge
+        4k  -> 4096px longest edge
 
-    There is intentionally NO auto mode.
-
-    Invalid or unavailable selections fall back to 4K.
+    Legacy 2K/2048 values are accepted as HD
+    for compatibility.
     """
 
     value = str(
         quality or DEFAULT_QUALITY
     ).strip().lower()
 
-    # --------------------------------------------------------
-    # Normalize common frontend variations
-    # --------------------------------------------------------
-
-    aliases = {
-        "2K": "2k",
-        "2048": "2k",
-        "2k-hd": "2k",
-        "hd": "2k",
-
-        "4K": "4k",
-        "4096": "4k",
-        "4k-hd": "4k",
-
-        "8K": "8k",
-        "8192": "8k",
-        "8k-hd": "8k",
-    }
-
-    value = aliases.get(
+    value = QUALITY_ALIASES.get(
         value,
         value,
     )
-
-    # --------------------------------------------------------
-    # Only 2K / 4K / 8K
-    # --------------------------------------------------------
 
     if value not in ALLOWED_QUALITY_VALUES:
         return DEFAULT_QUALITY
 
     return value
+
+
+# ============================================================
+# OUTPUT FORMAT NORMALIZATION
+# ============================================================
+
+def normalize_output_format(
+    output_format: str | None,
+    source_format: str | None = None,
+) -> str:
+    """
+    Normalize output format.
+
+    Explicit Laravel output_format wins.
+
+    If omitted, preserve the original supported
+    image format where possible.
+
+    PNG therefore remains PNG by default,
+    preserving transparency.
+    """
+
+    value = str(
+        output_format or ""
+    ).strip().lower()
+
+    if value == "jpg":
+        value = "jpeg"
+
+    if value in {
+        "png",
+        "jpeg",
+        "webp",
+    }:
+        return value
+
+    source = str(
+        source_format or ""
+    ).strip().lower()
+
+    if source == "jpg":
+        source = "jpeg"
+
+    if source in {
+        "png",
+        "jpeg",
+        "webp",
+    }:
+        return source
+
+    return "png"
 
 
 # ============================================================
@@ -183,12 +242,11 @@ def is_target_supported(
     width: int,
     height: int,
 ) -> bool:
-    """
-    Verify that the requested output dimensions are within
-    server safety limits.
-    """
 
-    if width <= 0 or height <= 0:
+    if width <= 0:
+        return False
+
+    if height <= 0:
         return False
 
     if width > MAX_OUTPUT_DIMENSION:
@@ -197,58 +255,42 @@ def is_target_supported(
     if height > MAX_OUTPUT_DIMENSION:
         return False
 
-    pixels = width * height
-
-    if pixels > MAX_OUTPUT_PIXELS:
+    if (
+        width * height
+        > MAX_OUTPUT_PIXELS
+    ):
         return False
 
     return True
 
 
 # ============================================================
-# RESOLVE REQUESTED QUALITY
+# RESOLVE TARGET
 # ============================================================
 
-def resolve_requested_quality(
+def resolve_target(
     source_width: int,
     source_height: int,
     quality: str,
-) -> str:
+):
     """
-    Select the requested output quality.
+    Resolve final output dimensions from quality.
 
-    The longest edge is used as the target.
+    HD:
+        2048px longest edge
 
-    Example:
+    4K:
+        4096px longest edge
 
-        Source:
-            826 × 1062
-
-        2K:
-            ~1595 × 2048
-
-        4K:
-            ~3189 × 4096
-
-        8K:
-            ~6378 × 8192
-
-    Aspect ratio is preserved.
-
-    If the selected quality cannot be safely produced
-    according to server limits, 4K is used as fallback.
+    Aspect ratio is always preserved.
     """
 
-    requested = normalize_quality(
+    quality = normalize_quality(
         quality
     )
 
-    # --------------------------------------------------------
-    # Try requested quality first
-    # --------------------------------------------------------
-
     target_longest = QUALITY_MODES[
-        requested
+        quality
     ]
 
     source_longest = max(
@@ -256,7 +298,6 @@ def resolve_requested_quality(
         source_height,
     )
 
-    # Preserve aspect ratio.
     scale = (
         target_longest
         / source_longest
@@ -281,22 +322,103 @@ def resolve_requested_quality(
     )
 
     # --------------------------------------------------------
-    # Requested target is supported
+    # Safety check
     # --------------------------------------------------------
 
-    if is_target_supported(
+    if not is_target_supported(
         target_width,
         target_height,
     ):
-        return requested
+
+        # Safe fallback to HD.
+
+        quality = "hd"
+
+        target_longest = QUALITY_MODES[
+            quality
+        ]
+
+        scale = (
+            target_longest
+            / source_longest
+        )
+
+        target_width = max(
+            2,
+            int(
+                round(
+                    source_width * scale
+                )
+            ),
+        )
+
+        target_height = max(
+            2,
+            int(
+                round(
+                    source_height * scale
+                )
+            ),
+        )
 
     # --------------------------------------------------------
-    # Requested target unavailable
-    #
-    # Fallback to 4K.
+    # Final safety check
     # --------------------------------------------------------
 
-    return "4k"
+    if not is_target_supported(
+        target_width,
+        target_height,
+    ):
+
+        raise ValueError(
+            "Requested output resolution "
+            "cannot be safely generated."
+        )
+
+    return (
+        quality,
+        target_width,
+        target_height,
+    )
+
+
+# ============================================================
+# RESOLVE TARGET FROM EDGE
+# ============================================================
+
+def resolve_target_from_edge(
+    source_width: int,
+    source_height: int,
+    target_longest_edge: int,
+):
+    """
+    Laravel compatibility.
+
+    Supported:
+
+        2048 -> HD
+        4096 -> 4K
+    """
+
+    edge_to_quality = {
+        2048: "hd",
+        4096: "4k",
+    }
+
+    if target_longest_edge not in edge_to_quality:
+
+        raise ValueError(
+            "target_longest_edge must be "
+            "2048 or 4096."
+        )
+
+    return resolve_target(
+        source_width,
+        source_height,
+        edge_to_quality[
+            target_longest_edge
+        ],
+    )
 
 
 # ============================================================
@@ -307,7 +429,7 @@ def validate_image_file(
     path: str,
 ):
     """
-    Validate that the uploaded file is a real supported image.
+    Validate actual image contents.
 
     Returns:
 
@@ -337,19 +459,17 @@ def validate_image_file(
                 )
 
             # ------------------------------------------------
-            # Pixel limit
+            # Pixel safety
             # ------------------------------------------------
 
             pixels = (
-                width
-                * height
+                width * height
             )
 
             if pixels > MAX_IMAGE_PIXELS:
 
                 raise ValueError(
-                    "Image resolution is too large. "
-                    "Please upload a smaller image."
+                    "Image resolution is too large."
                 )
 
             # ------------------------------------------------
@@ -406,7 +526,7 @@ def progress(
 
 
 # ============================================================
-# UPSCALE
+# SYNCHRONOUS UPSCALE
 # ============================================================
 
 @router.post(
@@ -416,31 +536,9 @@ async def upscale(
     file: UploadFile = File(...),
     job_id: str = Form(...),
     quality: str = Form(DEFAULT_QUALITY),
+    target_longest_edge: int | None = Form(None),
+    output_format: str | None = Form(None),
 ):
-    """
-    AI image enhancement/upscaling endpoint.
-
-    Supported quality modes:
-
-        2K
-        4K
-        8K
-
-    There is intentionally NO auto mode.
-
-    The requested quality represents the FINAL OUTPUT
-    resolution target.
-
-    It does NOT mean:
-
-        source × 2
-        source × 4
-        source × 8
-
-    RealESRGAN internally performs its x4 AI inference,
-    after which the result is mapped into the requested
-    final resolution.
-    """
 
     input_path = None
     output_path = None
@@ -463,6 +561,7 @@ async def upscale(
                 },
             )
 
+
         # ====================================================
         # 2. QUALITY
         # ====================================================
@@ -470,6 +569,7 @@ async def upscale(
         requested_quality = normalize_quality(
             quality
         )
+
 
         # ====================================================
         # 3. FILE NAME
@@ -495,6 +595,7 @@ async def upscale(
                 },
             )
 
+
         # ====================================================
         # 4. MIME TYPE
         # ====================================================
@@ -514,8 +615,9 @@ async def upscale(
                 },
             )
 
+
         # ====================================================
-        # 5. TEMPORARY PATHS
+        # 5. CREATE TEMPORARY PATHS
         # ====================================================
 
         input_path = create_input_path(
@@ -523,6 +625,7 @@ async def upscale(
         )
 
         output_path = create_output_path()
+
 
         # ====================================================
         # 6. UPLOAD
@@ -573,9 +676,7 @@ async def upscale(
                         content={
                             "success": False,
                             "message": (
-                                "Image file is too large. "
-                                "Maximum allowed size is "
-                                "10 MB."
+                                "Image file is too large."
                             ),
                         },
                     )
@@ -584,14 +685,11 @@ async def upscale(
                     chunk
                 )
 
-        # ====================================================
-        # 7. CLOSE UPLOAD
-        # ====================================================
-
         await file.close()
 
+
         # ====================================================
-        # 8. VALIDATE IMAGE
+        # 7. VALIDATE IMAGE
         # ====================================================
 
         update_progress(
@@ -603,138 +701,81 @@ async def upscale(
         (
             source_width,
             source_height,
-            image_format,
+            source_format,
         ) = validate_image_file(
             input_path
         )
 
+
         # ====================================================
-        # 9. RESOLVE QUALITY
+        # 8. RESOLVE TARGET FROM QUALITY
         # ====================================================
 
-        final_quality = resolve_requested_quality(
+        (
+            final_quality,
+            target_width,
+            target_height,
+        ) = resolve_target(
             source_width,
             source_height,
             requested_quality,
         )
 
-        # ====================================================
-        # 10. TARGET LONGEST EDGE
-        # ====================================================
-
-        target_longest = QUALITY_MODES[
-            final_quality
-        ]
-
-        source_longest = max(
-            source_width,
-            source_height,
-        )
-
-        scale = (
-            target_longest
-            / source_longest
-        )
-
-        target_width = max(
-            2,
-            int(
-                round(
-                    source_width
-                    * scale
-                )
-            ),
-        )
-
-        target_height = max(
-            2,
-            int(
-                round(
-                    source_height
-                    * scale
-                )
-            ),
-        )
 
         # ====================================================
-        # 11. FINAL SAFETY CHECK
+        # 9. TARGET LONGEST EDGE OVERRIDE
         # ====================================================
 
-        if not is_target_supported(
-            target_width,
-            target_height,
-        ):
+        if target_longest_edge is not None:
 
-            # ------------------------------------------------
-            # Last-resort 4K target.
-            # ------------------------------------------------
-
-            final_quality = "4k"
-
-            target_longest = QUALITY_MODES[
-                final_quality
-            ]
-
-            scale = (
-                target_longest
-                / source_longest
-            )
-
-            target_width = max(
-                2,
-                int(
-                    round(
-                        source_width
-                        * scale
-                    )
-                ),
-            )
-
-            target_height = max(
-                2,
-                int(
-                    round(
-                        source_height
-                        * scale
-                    )
-                ),
-            )
-
-            if not is_target_supported(
+            (
+                final_quality,
                 target_width,
                 target_height,
-            ):
+            ) = resolve_target_from_edge(
+                source_width,
+                source_height,
+                target_longest_edge,
+            )
 
-                raise ValueError(
-                    "The requested image resolution "
-                    "cannot be safely generated by "
-                    "the current server."
-                )
 
         # ====================================================
-        # 12. PREPARING
+        # 10. OUTPUT FORMAT
+        # ====================================================
+
+        final_output_format = (
+            normalize_output_format(
+                output_format,
+                source_format,
+            )
+        )
+
+
+        # ====================================================
+        # 11. PREPARING
         # ====================================================
 
         update_progress(
             job_id,
             15,
             (
-                f"Preparing {final_quality.upper()} "
-                f"AI output "
+                f"Preparing "
+                f"{final_quality.upper()} "
                 f"{target_width}×{target_height}"
             ),
         )
 
+
         # ====================================================
-        # 13. AI UPSCALING
+        # 12. AI UPSCALING
         # ====================================================
 
         update_progress(
             job_id,
             20,
             (
-                f"Starting {final_quality.upper()} "
-                "AI enhancement"
+                f"Running Real-ESRGAN "
+                f"{final_quality.upper()} AI enhancement"
             ),
         )
 
@@ -744,20 +785,28 @@ async def upscale(
             output_path,
             job_id,
             final_quality,
+            target_width,
+            target_height,
+            final_output_format,
         )
 
+
         # ====================================================
-        # 14. VERIFY OUTPUT
+        # 13. VERIFY OUTPUT FILE
         # ====================================================
 
-        if not output_path or not os.path.isfile(
-            output_path
+        if (
+            not output_path
+            or not os.path.isfile(
+                output_path
+            )
         ):
 
             raise RuntimeError(
                 "AI processing completed without "
                 "creating an output image."
             )
+
 
         output_size = os.path.getsize(
             output_path
@@ -766,90 +815,96 @@ async def upscale(
         if output_size <= 0:
 
             raise RuntimeError(
-                "The generated output image is empty."
+                "Generated output image is empty."
             )
 
+
         # ====================================================
-        # 15. RETURN OUTPUT
+        # 14. VERIFY GENERATED IMAGE
+        # ====================================================
+
+        try:
+
+            with Image.open(
+                output_path
+            ) as output_image:
+
+                actual_width, actual_height = (
+                    output_image.size
+                )
+
+                if (
+                    actual_width != target_width
+                    or actual_height != target_height
+                ):
+
+                    raise RuntimeError(
+                        "Generated image dimensions do not "
+                        "match the requested output resolution."
+                    )
+
+        except UnidentifiedImageError:
+
+            raise RuntimeError(
+                "Generated output is not a valid image."
+            )
+
+
+        # ====================================================
+        # 15. COMPLETE
         # ====================================================
 
         update_progress(
             job_id,
             100,
             (
-                f"{final_quality.upper()} AI enhancement "
-                "completed"
+                f"{final_quality.upper()} "
+                "AI enhancement completed"
             ),
         )
 
+
+        # ====================================================
+        # 16. MEDIA TYPE
+        # ====================================================
+
+        media_types = {
+            "png": "image/png",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+        }
+
+        media_type = media_types[
+            final_output_format
+        ]
+
+
+        # ====================================================
+        # 17. FILE EXTENSION
+        # ====================================================
+
+        extension = (
+            "jpg"
+            if final_output_format == "jpeg"
+            else final_output_format
+        )
+
+
+        # ====================================================
+        # 18. RETURN ACTUAL OUTPUT FILE
+        # ====================================================
+
         return FileResponse(
             output_path,
-            media_type="image/png",
+            media_type=media_type,
             filename=(
-                f"upscaled-{final_quality}.png"
+                f"upscaled-"
+                f"{final_quality}."
+                f"{extension}"
             ),
             background=None,
         )
 
-    # ========================================================
-    # BUSY SERVER
-    # ========================================================
-
-    except RuntimeError as exc:
-
-        message = str(
-            exc
-        )
-
-        if (
-            "currently busy"
-            in message.lower()
-        ):
-
-            cleanup(
-                input_path,
-                output_path,
-            )
-
-            remove_progress(
-                job_id
-            )
-
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "success": False,
-                    "message": (
-                        "The AI upscaler is currently "
-                        "processing another image. "
-                        "Please try again shortly."
-                    ),
-                },
-            )
-
-        traceback.print_exc()
-
-        cleanup(
-            input_path,
-            output_path,
-        )
-
-        update_progress(
-            job_id,
-            0,
-            "AI processing failed",
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "message": (
-                    "AI image processing failed. "
-                    "Please try again."
-                ),
-            },
-        )
 
     # ========================================================
     # VALIDATION ERROR
@@ -870,11 +925,38 @@ async def upscale(
             status_code=400,
             content={
                 "success": False,
-                "message": str(
-                    exc
-                ),
+                "message": str(exc),
             },
         )
+
+
+    # ========================================================
+    # PROCESSING ERROR
+    # ========================================================
+
+    except RuntimeError as exc:
+
+        traceback.print_exc()
+
+        cleanup(
+            input_path,
+            output_path,
+        )
+
+        update_progress(
+            job_id,
+            0,
+            "AI processing failed",
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": str(exc),
+            },
+        )
+
 
     # ========================================================
     # IMAGE ERROR
@@ -904,6 +986,7 @@ async def upscale(
                 ),
             },
         )
+
 
     # ========================================================
     # UNEXPECTED ERROR
