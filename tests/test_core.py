@@ -10,6 +10,7 @@ from PIL import Image
 import routes.upscale as upscale_route
 from main import app
 from services.inference import InferenceEngine
+import services.tile_processor as tile_processor
 import services.session as session_module
 from services.preprocess import load_image
 from services.tile_processor import generate_tiles, run_ai_pass, tile_count
@@ -160,6 +161,36 @@ def test_tile_generator_and_direct_writer(tmp_path):
     with Image.open(output_path) as output:
         assert output.size == (200, 140)
         assert output.getpixel((100, 70)) == (90, 90, 90)
+
+
+@pytest.mark.parametrize(
+    "width,height,tile_size,expected_count",
+    [
+        (826, 1062, 128, 99),
+        # The checked-in iterator stops at the first tile covering each edge,
+        # so 192/pad-16 produces 5 columns x 7 rows, not 42 tiles.
+        (826, 1062, 192, 35),
+        (826, 1062, 256, 20),
+        (70, 100, 128, 1),  # Smaller than one tile.
+        (192, 192, 192, 1),  # Exactly one tile.
+        (352, 352, 192, 4),  # Exactly tile size plus one stride.
+        (353, 353, 192, 9),  # One pixel beyond that boundary.
+        (826, 1062, 192, 35),  # Portrait.
+        (1062, 826, 192, 35),  # Landscape.
+        (826, 826, 192, 25),  # Square.
+    ],
+)
+def test_tile_count_matches_lazy_iterator(
+    monkeypatch, width, height, tile_size, expected_count
+):
+    monkeypatch.setattr(tile_processor, "TILE_SMALL", tile_size)
+    monkeypatch.setattr(tile_processor, "TILE_PAD", 16)
+    source = np.zeros((height, width, 3), dtype=np.uint8)
+
+    generated_count = sum(1 for _ in generate_tiles(source))
+
+    assert generated_count == expected_count
+    assert tile_count(width, height) == generated_count
 
 
 def test_busy_inference_lock_is_preserved():

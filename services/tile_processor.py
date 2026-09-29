@@ -50,11 +50,21 @@ def choose_tile_size(
     return TILE_LARGE
 
 
+def _tile_axis_coordinates(length: int, tile_size: int, stride: int):
+    """Yield the exact start/end coordinates used along one image axis."""
+
+    for start in range(0, length, stride):
+        end = min(start + tile_size, length)
+        yield start, end
+        if end >= length:
+            break
+
+
 def tile_count(width: int, height: int) -> int:
     tile_size = choose_tile_size(width, height)
     stride = tile_size - TILE_PAD * 2
-    columns = max(1, ((int(width) - tile_size + stride - 1) // stride) + 1)
-    rows = max(1, ((int(height) - tile_size + stride - 1) // stride) + 1)
+    columns = sum(1 for _ in _tile_axis_coordinates(int(width), tile_size, stride))
+    rows = sum(1 for _ in _tile_axis_coordinates(int(height), tile_size, stride))
     return columns * rows
 
 
@@ -130,27 +140,8 @@ def generate_tiles(
     # GENERATE TILE POSITIONS
     # --------------------------------------------------------
 
-    for top in range(
-        0,
-        height,
-        stride,
-    ):
-
-        bottom = min(
-            top + tile_size,
-            height,
-        )
-
-        for left in range(
-            0,
-            width,
-            stride,
-        ):
-
-            right = min(
-                left + tile_size,
-                width,
-            )
+    for top, bottom in _tile_axis_coordinates(height, tile_size, stride):
+        for left, right in _tile_axis_coordinates(width, tile_size, stride):
 
             if image.ndim == 3:
                 tile = image[top:bottom, left:right, :]
@@ -165,15 +156,6 @@ def generate_tiles(
                 bottom,
             )
 
-            if right >= width:
-                break
-
-        # ----------------------------------------------------
-        # Last row reached.
-        # ----------------------------------------------------
-
-        if bottom >= height:
-            break
 
 
 # ============================================================
