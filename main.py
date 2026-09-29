@@ -83,6 +83,16 @@ app = FastAPI(
 )
 
 
+class ImageAwareGZipMiddleware(GZipMiddleware):
+    """Keep GZip for JSON APIs; image downloads are already compressed."""
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/upscale":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 # ============================================================
 # CORS
 # ============================================================
@@ -105,7 +115,7 @@ app.add_middleware(
 # ============================================================
 
 app.add_middleware(
-    GZipMiddleware,
+    ImageAwareGZipMiddleware,
     minimum_size=1024,
 )
 

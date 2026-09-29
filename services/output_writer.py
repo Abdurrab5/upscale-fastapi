@@ -1,5 +1,4 @@
 
-import gc
 import os
 import tempfile
 
@@ -496,7 +495,6 @@ class UpscaleOutputWriter:
                 except Exception:
                     pass
 
-            gc.collect()
 
     # ========================================================
     # CLOSE
@@ -524,8 +522,6 @@ class UpscaleOutputWriter:
                 pass
 
             self.canvas = None
-
-        gc.collect()
 
         # ----------------------------------------------------
         # Remove raw memmap backing file.

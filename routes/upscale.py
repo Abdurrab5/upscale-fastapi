@@ -2,6 +2,8 @@ import asyncio
 import os
 import re
 import traceback
+import logging
+import time
 
 from fastapi import (
     APIRouter,
@@ -14,6 +16,7 @@ from fastapi.responses import (
     FileResponse,
     JSONResponse,
 )
+from starlette.background import BackgroundTask
 
 from PIL import (
     Image,
@@ -30,6 +33,7 @@ from config import (
 from services.upscale_service import (
     upscale_image,
 )
+from services.target_resolver import resolve_target as resolve_service_target
 
 from utils.image import (
     create_input_path,
@@ -45,6 +49,7 @@ from utils.progress import (
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -285,101 +290,9 @@ def resolve_target(
     Aspect ratio is always preserved.
     """
 
-    quality = normalize_quality(
-        quality
-    )
-
-    target_longest = QUALITY_MODES[
-        quality
-    ]
-
-    source_longest = max(
-        source_width,
-        source_height,
-    )
-
-    scale = (
-        target_longest
-        / source_longest
-    )
-
-    target_width = max(
-        2,
-        int(
-            round(
-                source_width * scale
-            )
-        ),
-    )
-
-    target_height = max(
-        2,
-        int(
-            round(
-                source_height * scale
-            )
-        ),
-    )
-
-    # --------------------------------------------------------
-    # Safety check
-    # --------------------------------------------------------
-
-    if not is_target_supported(
-        target_width,
-        target_height,
-    ):
-
-        # Safe fallback to HD.
-
-        quality = "hd"
-
-        target_longest = QUALITY_MODES[
-            quality
-        ]
-
-        scale = (
-            target_longest
-            / source_longest
-        )
-
-        target_width = max(
-            2,
-            int(
-                round(
-                    source_width * scale
-                )
-            ),
-        )
-
-        target_height = max(
-            2,
-            int(
-                round(
-                    source_height * scale
-                )
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Final safety check
-    # --------------------------------------------------------
-
-    if not is_target_supported(
-        target_width,
-        target_height,
-    ):
-
-        raise ValueError(
-            "Requested output resolution "
-            "cannot be safely generated."
-        )
-
-    return (
-        quality,
-        target_width,
-        target_height,
-    )
+    quality = normalize_quality(quality)
+    target = resolve_service_target(source_width, source_height, quality)
+    return target.quality, target.width, target.height
 
 
 # ============================================================
@@ -542,6 +455,8 @@ async def upscale(
 
     input_path = None
     output_path = None
+    request_started = time.perf_counter()
+    logger.info("UPSCALE_REQUEST_RECEIVED request_id=%s", job_id)
 
     try:
 
@@ -624,13 +539,13 @@ async def upscale(
             filename
         )
 
-        output_path = create_output_path()
 
 
         # ====================================================
         # 6. UPLOAD
         # ====================================================
 
+        upload_started = time.perf_counter()
         update_progress(
             job_id,
             5,
@@ -686,6 +601,8 @@ async def upscale(
                 )
 
         await file.close()
+        upload_seconds = time.perf_counter() - upload_started
+        logger.info("UPSCALE_UPLOAD_COMPLETE request_id=%s bytes=%d upload_s=%.3f", job_id, total_size, upload_seconds)
 
 
         # ====================================================
@@ -705,6 +622,7 @@ async def upscale(
         ) = validate_image_file(
             input_path
         )
+        validation_seconds = time.perf_counter() - upload_started - upload_seconds
 
 
         # ====================================================
@@ -749,6 +667,8 @@ async def upscale(
                 source_format,
             )
         )
+        output_path = create_output_path(final_output_format)
+        logger.info("UPSCALE_VALIDATED request_id=%s source=%dx%d source_format=%s validation_s=%.3f target=%dx%d quality=%s output_format=%s", job_id, source_width, source_height, source_format, validation_seconds, target_width, target_height, final_quality, final_output_format)
 
 
         # ====================================================
@@ -818,6 +738,8 @@ async def upscale(
                 "Generated output image is empty."
             )
 
+        logger.info("UPSCALE_REQUEST_COMPLETE request_id=%s total_s=%.3f output_bytes=%d", job_id, time.perf_counter() - request_started, output_size)
+
 
         # ====================================================
         # 14. VERIFY GENERATED IMAGE
@@ -861,6 +783,7 @@ async def upscale(
                 f"{final_quality.upper()} "
                 "AI enhancement completed"
             ),
+            "completed",
         )
 
 
@@ -902,7 +825,7 @@ async def upscale(
                 f"{final_quality}."
                 f"{extension}"
             ),
-            background=None,
+            background=BackgroundTask(cleanup, input_path, output_path),
         )
 
 
@@ -947,6 +870,7 @@ async def upscale(
             job_id,
             0,
             "AI processing failed",
+            "failed",
         )
 
         return JSONResponse(
@@ -1005,6 +929,7 @@ async def upscale(
             job_id,
             0,
             "Processing failed",
+            "failed",
         )
 
         return JSONResponse(

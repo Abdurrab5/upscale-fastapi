@@ -1,6 +1,26 @@
 import os
 
 
+def _int_setting(name, default, minimum, maximum):
+    raw = os.getenv(name)
+    value = int(raw) if raw is not None else int(default)
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+    return value
+
+
+def _bool_setting(name, default):
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")
+
+
 # ============================================================
 # APPLICATION PATHS
 # ============================================================
@@ -97,13 +117,16 @@ MAX_OUTPUT_PIXELS = (
 # on source image resolution.
 #
 
-TILE_SMALL = 128
+TILE_SMALL = _int_setting("UPSCALE_TILE_SMALL", 128, 64, 512)
 
-TILE_MEDIUM = 192
+TILE_MEDIUM = _int_setting("UPSCALE_TILE_MEDIUM", 192, 64, 512)
 
-TILE_LARGE = 256
+TILE_LARGE = _int_setting("UPSCALE_TILE_LARGE", 256, 64, 512)
 
-TILE_PAD = 16
+TILE_PAD = _int_setting("UPSCALE_TILE_PAD", 16, 1, 64)
+
+if min(TILE_SMALL, TILE_MEDIUM, TILE_LARGE) <= TILE_PAD * 2:
+    raise ValueError("Every configured tile size must exceed twice UPSCALE_TILE_PAD.")
 
 
 # ============================================================
@@ -111,8 +134,8 @@ TILE_PAD = 16
 # ============================================================
 
 CPU_THREADS = min(
+    _int_setting("UPSCALE_CPU_THREADS", 2, 1, 4),
     os.cpu_count() or 2,
-    2,
 )
 
 
@@ -122,7 +145,10 @@ CPU_THREADS = min(
 
 OUTPUT_FORMAT = "PNG"
 
-PNG_COMPRESS_LEVEL = 6
+PNG_COMPRESS_LEVEL = _int_setting("UPSCALE_PNG_COMPRESS_LEVEL", 6, 0, 9)
+
+ONNX_ENABLE_CPU_MEM_ARENA = _bool_setting("ONNX_ENABLE_CPU_MEM_ARENA", True)
+ONNX_ENABLE_MEM_PATTERN = _bool_setting("ONNX_ENABLE_MEM_PATTERN", True)
 
 
 # ============================================================

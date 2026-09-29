@@ -2,6 +2,8 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 
 
 # ============================================================
@@ -29,6 +31,13 @@ os.makedirs(
     PROGRESS_DIR,
     exist_ok=True,
 )
+
+_WRITE_LOCK = threading.Lock()
+_LAST_WRITES = {}
+_LAST_SWEEP = 0.0
+_MIN_PROGRESS_DELTA = 2
+_MIN_WRITE_INTERVAL = 0.5
+_PROGRESS_TTL_SECONDS = 24 * 60 * 60
 
 
 # ============================================================
@@ -84,6 +93,25 @@ def _progress_path(
     )
 
 
+def _write_progress_atomically(target, job_id, payload):
+    directory = os.path.dirname(target)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{job_id}.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(payload, file, separators=(",", ":"))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
+
+
 # ============================================================
 # UPDATE PROGRESS
 # ============================================================
@@ -130,18 +158,34 @@ def update_progress(
     }:
         status = "processing"
 
-    directory = os.path.dirname(
-        target
-    )
-
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{job_id}.",
-        suffix=".tmp",
-        dir=directory,
-    )
-
-    try:
-
+    now = time.monotonic()
+    with _WRITE_LOCK:
+        previous = _LAST_WRITES.get(str(job_id))
+        important = status in {"completed", "failed"} or percent in {0, 100}
+        if not important and previous is not None:
+            previous_percent, previous_time = previous
+            if (abs(percent - previous_percent) < _MIN_PROGRESS_DELTA
+                    and now - previous_time < _MIN_WRITE_INTERVAL):
+                return
+        # Progress is polled state, not durable history. Opportunistically
+        # remove files older than a day so this directory stays bounded.
+        global _LAST_SWEEP
+        if now - _LAST_SWEEP > 300:
+            _LAST_SWEEP = now
+            wall_cutoff = time.time() - _PROGRESS_TTL_SECONDS
+            try:
+                for name in os.listdir(PROGRESS_DIR):
+                    if name.endswith((".json", ".tmp")):
+                        path = os.path.join(PROGRESS_DIR, name)
+                        try:
+                            if os.path.getmtime(path) < wall_cutoff:
+                                os.remove(path)
+                                if name.endswith(".json"):
+                                    _LAST_WRITES.pop(name[:-5], None)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
         payload = {
             "job_id": str(
                 job_id
@@ -153,44 +197,14 @@ def update_progress(
             ),
         }
 
-        with os.fdopen(
-            fd,
-            "w",
-            encoding="utf-8",
-        ) as file:
+        _write_progress_atomically(target, job_id, payload)
+        _LAST_WRITES[str(job_id)] = (percent, now)
 
-            json.dump(
-                payload,
-                file,
-                separators=(
-                    ",",
-                    ":",
-                ),
-            )
-
-            file.flush()
-
-            os.fsync(
-                file.fileno()
-            )
-
-        os.replace(
-            temporary,
-            target,
-        )
-
-    except Exception:
-
-        try:
-
-            os.remove(
-                temporary
-            )
-
-        except OSError:
-            pass
-
-        raise
+        if len(_LAST_WRITES) > 4096:
+            excess = len(_LAST_WRITES) - 4096
+            oldest = sorted(_LAST_WRITES.items(), key=lambda item: item[1][1])[:excess]
+            for cached_job, _ in oldest:
+                _LAST_WRITES.pop(cached_job, None)
 
 
 # ============================================================
@@ -365,6 +379,9 @@ def remove_progress(
             os.remove(
                 path
             )
+
+        with _WRITE_LOCK:
+            _LAST_WRITES.pop(str(job_id), None)
 
     except (
         OSError,

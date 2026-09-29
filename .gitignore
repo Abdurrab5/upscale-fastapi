@@ -12,3 +12,18 @@ env/
 temp/
 __pycache__/
 *.py[cod]
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Runtime files
+temp/
+tmp/
+progress/
+*.ses
+
+# Local benchmark/test outputs
+optimized_4k_test.png

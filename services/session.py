@@ -1,13 +1,19 @@
 
 import os
 import threading
+import time
+import logging
 
 import onnxruntime as ort
 
 from config import (
     CPU_THREADS,
     MODEL_PATH,
+    ONNX_ENABLE_CPU_MEM_ARENA,
+    ONNX_ENABLE_MEM_PATTERN,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -127,9 +133,9 @@ def get_session():
         # MEMORY OPTIMIZATION
         # ----------------------------------------------------
 
-        options.enable_cpu_mem_arena = True
+        options.enable_cpu_mem_arena = ONNX_ENABLE_CPU_MEM_ARENA
 
-        options.enable_mem_pattern = True
+        options.enable_mem_pattern = ONNX_ENABLE_MEM_PATTERN
 
         # ----------------------------------------------------
         # LOGGING
@@ -143,6 +149,7 @@ def get_session():
 
         try:
 
+            started = time.perf_counter()
             session = ort.InferenceSession(
                 model_path,
                 sess_options=options,
@@ -150,6 +157,7 @@ def get_session():
                     "CPUExecutionProvider",
                 ],
             )
+            logger.info("ONNX_SESSION initialized_s=%.3f cpu_threads=%d cpu_mem_arena=%s mem_pattern=%s", time.perf_counter() - started, options.intra_op_num_threads, options.enable_cpu_mem_arena, options.enable_mem_pattern)
 
         except Exception as exc:
 

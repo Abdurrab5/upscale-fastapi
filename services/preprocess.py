@@ -1,6 +1,4 @@
 
-import gc
-
 import numpy as np
 
 from PIL import (
@@ -17,15 +15,16 @@ class ImageData:
 
     def __init__(
         self,
-        tensor,
+        rgb_array,
         alpha,
         original_size,
     ):
         """
         Container for the prepared source image.
 
-        tensor:
-            NCHW float32 RGB tensor in range 0.0 - 1.0.
+        rgb:
+            HWC uint8 RGB source. Individual inference tiles are
+            converted to NCHW float32 immediately before ONNX.
 
         alpha:
             Optional uint8 alpha channel.
@@ -34,7 +33,7 @@ class ImageData:
             (width, height) after EXIF orientation correction.
         """
 
-        self.tensor = tensor
+        self.tensor = rgb_array
         self.alpha = alpha
         self.original_size = original_size
 
@@ -61,7 +60,7 @@ def load_image(
           ↓
         uint8 HWC
           ↓
-        float32 NCHW
+        HWC uint8 source, with each tile converted just in time
           ↓
         Real-ESRGAN
 
@@ -147,7 +146,7 @@ def load_image(
 
                 try:
 
-                    array = np.asarray(
+                    rgb_array = np.asarray(
                         rgb,
                         dtype=np.uint8,
                     ).copy()
@@ -160,65 +159,28 @@ def load_image(
                 # VALIDATE RGB ARRAY
                 # =============================================
 
-                if array.ndim != 3:
+                if rgb_array.ndim != 3:
 
                     raise ValueError(
                         "Unable to prepare image RGB data."
                     )
 
-                if array.shape[2] != 3:
+                if rgb_array.shape[2] != 3:
 
                     raise ValueError(
                         "Image must contain three RGB channels."
                     )
 
                 # =============================================
-                # RGB → NCHW FLOAT32
-                # =============================================
-
-                tensor = array.transpose(
-                    2,
-                    0,
-                    1,
-                )
-
-                # Make the tensor contiguous before converting
-                # to float32. This is useful for ONNX Runtime and
-                # avoids unnecessary copies later.
-
-                tensor = np.ascontiguousarray(
-                    tensor,
-                    dtype=np.float32,
-                )
-
-                # =============================================
-                # NORMALIZE
-                # =============================================
-
-                tensor *= (
-                    1.0 / 255.0
-                )
-
-                # =============================================
-                # ADD BATCH DIMENSION
-                # =============================================
-
-                tensor = np.expand_dims(
-                    tensor,
-                    axis=0,
-                )
-
-                tensor = np.ascontiguousarray(
-                    tensor,
-                    dtype=np.float32,
-                )
+                # Keep the decoded image compact. Inference creates
+                # float32 NCHW only for the current tile.
 
                 # =============================================
                 # RETURN
                 # =============================================
 
                 return ImageData(
-                    tensor=tensor,
+                    rgb_array=rgb_array,
                     alpha=alpha,
                     original_size=original_size,
                 )
@@ -248,8 +210,3 @@ def load_image(
         raise ValueError(
             f"Unable to read image: {exc}"
         )
-
-    finally:
-
-        gc.collect()
- 

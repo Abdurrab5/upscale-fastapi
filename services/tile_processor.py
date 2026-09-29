@@ -1,7 +1,6 @@
  
-import gc
-
 import numpy as np
+import time
 
 from PIL import Image
 
@@ -51,6 +50,14 @@ def choose_tile_size(
     return TILE_LARGE
 
 
+def tile_count(width: int, height: int) -> int:
+    tile_size = choose_tile_size(width, height)
+    stride = tile_size - TILE_PAD * 2
+    columns = max(1, ((int(width) - tile_size + stride - 1) // stride) + 1)
+    rows = max(1, ((int(height) - tile_size + stride - 1) // stride) + 1)
+    return columns * rows
+
+
 # ============================================================
 # GENERATE TILES
 # ============================================================
@@ -59,7 +66,7 @@ def generate_tiles(
     image,
 ):
     """
-    Generate overlapping NCHW image tiles.
+    Generate overlapping HWC uint8 or NCHW tensor tiles lazily.
 
     Yields:
 
@@ -81,12 +88,15 @@ def generate_tiles(
             "Image tensor cannot be None."
         )
 
-    if getattr(image, "ndim", 0) != 4:
+    if getattr(image, "ndim", 0) not in (3, 4):
         raise ValueError(
-            "Image tensor must have NCHW shape."
+            "Image must have HWC uint8 or NCHW tensor shape."
         )
 
-    _, channels, height, width = image.shape
+    if image.ndim == 3:
+        height, width, channels = image.shape
+    else:
+        _, channels, height, width = image.shape
 
     if channels != 3:
         raise ValueError(
@@ -142,12 +152,10 @@ def generate_tiles(
                 width,
             )
 
-            tile = image[
-                :,
-                :,
-                top:bottom,
-                left:right,
-            ]
+            if image.ndim == 3:
+                tile = image[top:bottom, left:right, :]
+            else:
+                tile = image[:, :, top:bottom, left:right]
 
             yield (
                 tile,
@@ -156,6 +164,9 @@ def generate_tiles(
                 right,
                 bottom,
             )
+
+            if right >= width:
+                break
 
         # ----------------------------------------------------
         # Last row reached.
@@ -490,6 +501,8 @@ def run_ai_pass(
     output_width: int,
     output_height: int,
     progress_callback=None,
+    output_writer=None,
+    stage_metrics=None,
 ):
     """
     Run one native Real-ESRGAN x4 pass.
@@ -537,12 +550,12 @@ def run_ai_pass(
             "Image tensor is required."
         )
 
-    if getattr(image, "ndim", 0) != 4:
-        raise ValueError(
-            "AI input must use NCHW format."
-        )
-
-    _, channels, source_height, source_width = image.shape
+    if getattr(image, "ndim", 0) == 3:
+        source_height, source_width, channels = image.shape
+    elif getattr(image, "ndim", 0) == 4:
+        _, channels, source_height, source_width = image.shape
+    else:
+        raise ValueError("AI input must be an HWC image or NCHW tensor.")
 
     if channels != 3:
         raise ValueError(
@@ -592,27 +605,15 @@ def run_ai_pass(
     # Never source × 4.
     #
 
-    canvas = np.zeros(
-        (
-            output_height,
-            output_width,
-            3,
-        ),
-        dtype=np.uint8,
+    canvas = None if output_writer is not None else np.zeros(
+        (output_height, output_width, 3), dtype=np.uint8
     )
 
     # ========================================================
     # TILE COUNT
     # ========================================================
 
-    tile_positions = list(
-        generate_tiles(image)
-    )
-
-    total_tiles = max(
-        1,
-        len(tile_positions),
-    )
+    total_tiles = tile_count(source_width, source_height)
 
     processed = 0
 
@@ -626,9 +627,10 @@ def run_ai_pass(
         top,
         right,
         bottom,
-    ) in tile_positions:
+    ) in generate_tiles(image):
 
         prediction = None
+        composition_started = None
 
         try:
 
@@ -636,12 +638,27 @@ def run_ai_pass(
             # REAL-ESRGAN INFERENCE
             # =================================================
 
+            if tile.ndim == 3:
+                model_tile = np.ascontiguousarray(
+                    tile.transpose(2, 0, 1)[None, ...], dtype=np.float32
+                )
+                model_tile *= (1.0 / 255.0)
+            else:
+                model_tile = tile
+
+            inference_started = time.perf_counter()
             prediction = session.run(
                 None,
                 {
-                    input_name: tile,
+                    input_name: model_tile,
                 },
             )[0]
+            if stage_metrics is not None:
+                stage_metrics["ai_inference_s"] = stage_metrics.get("ai_inference_s", 0.0) + time.perf_counter() - inference_started
+            if tile.ndim == 3:
+                del model_tile
+
+            composition_started = time.perf_counter()
 
             # =================================================
             # VERIFY MODEL OUTPUT
@@ -779,15 +796,14 @@ def run_ai_pass(
             # WRITE FINAL CANVAS
             # =================================================
 
-            canvas[
-                target_top:target_bottom,
-                target_left:target_right,
-                :
-            ] = prediction[
-                :target_height,
-                :target_width,
-                :
-            ]
+            if output_writer is not None:
+                output_writer.write_tile(prediction, target_left, target_top)
+            else:
+                canvas[target_top:target_bottom, target_left:target_right, :] = prediction[:target_height, :target_width, :]
+
+            if stage_metrics is not None:
+                stage_metrics["composition_resize_s"] = stage_metrics.get("composition_resize_s", 0.0) + time.perf_counter() - composition_started
+            composition_started = None
 
             # =================================================
             # PROGRESS
@@ -815,6 +831,9 @@ def run_ai_pass(
 
         finally:
 
+            if stage_metrics is not None and composition_started is not None:
+                stage_metrics["composition_resize_s"] = stage_metrics.get("composition_resize_s", 0.0) + time.perf_counter() - composition_started
+
             # -------------------------------------------------
             # Release inference memory immediately.
             # -------------------------------------------------
@@ -824,8 +843,6 @@ def run_ai_pass(
                 del prediction
 
             del tile
-
-            gc.collect()
 
     return canvas
  

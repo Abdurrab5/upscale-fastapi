@@ -41,6 +41,8 @@ class InferenceEngine:
         target_height,
         ai_passes=1,
         progress_callback=None,
+        output_writer=None,
+        stage_metrics=None,
     ):
         """
         Run the requested number of Real-ESRGAN passes.
@@ -85,10 +87,10 @@ class InferenceEngine:
                     "AI input tensor must be a NumPy array."
                 )
 
-            if tensor.ndim != 4:
+            if tensor.ndim not in (3, 4):
 
                 raise ValueError(
-                    "AI input tensor must have NCHW shape."
+                    "AI input must use HWC uint8 or NCHW format."
                 )
 
             target_width = int(
@@ -141,27 +143,10 @@ class InferenceEngine:
 
                     progress_callback(0)
 
-                source = (
-                    tensor[0]
-                    .transpose(
-                        1,
-                        2,
-                        0,
-                    )
-                )
-
-                source = np.clip(
-                    source,
-                    0.0,
-                    1.0,
-                )
-
-                source = (
-                    source
-                    * 255.0
-                ).astype(
-                    np.uint8
-                )
+                if tensor.ndim == 3:
+                    source = tensor
+                else:
+                    source = (tensor[0].transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
 
                 result = resize_image_array(
                     source,
@@ -170,6 +155,11 @@ class InferenceEngine:
                 )
 
                 del source
+
+                if output_writer is not None:
+                    output_writer.write_tile(result, 0, 0)
+                    del result
+                    result = None
 
                 if progress_callback:
 
@@ -187,9 +177,10 @@ class InferenceEngine:
                 ai_passes
             ):
 
-                _, _, height, width = (
-                    current.shape
-                )
+                if current.ndim == 3:
+                    height, width, _ = current.shape
+                else:
+                    _, _, height, width = current.shape
 
                 remaining_passes = (
                     ai_passes
@@ -257,6 +248,12 @@ class InferenceEngine:
                     pass_width,
                     pass_height,
                     progress_callback=pass_progress,
+                    output_writer=(
+                        output_writer
+                        if pass_number == ai_passes - 1
+                        else None
+                    ),
+                    stage_metrics=stage_metrics,
                 )
 
                 # ------------------------------------------------
@@ -293,7 +290,6 @@ class InferenceEngine:
                 # ------------------------------------------------
 
                 else:
-
                     return result
 
             # This should never be reached when ai_passes >= 1.
